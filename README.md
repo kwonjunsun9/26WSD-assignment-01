@@ -92,7 +92,7 @@ copy .env.example .env
 node --input-type=module -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('hex'));"
 ```
 
-출력된 64자리 16진수 값을 [.env](/backend-express/src)의 JWT_SECRET에 입력한 후 저장합니다. 실제 키는 소스나 README에 기록하지 않으며, .env는 Git에 포함하지 않습니다.
+출력된 64자리 16진수 값을 [.env](/backend-express)의 JWT_SECRET에 입력한 후 저장합니다. 실제 키는 소스나 README에 기록하지 않으며, .env는 Git에 포함하지 않습니다.
 
 ```sh
 JWT_SECRET=<방금 생성한 64자리 16진수 값>
