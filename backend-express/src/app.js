@@ -1,0 +1,131 @@
+import "dotenv/config";
+import express from "express";
+import { ApiError } from "./errors.js";
+import { store } from "./store.js";
+import { findPublic, verifyCredentials } from "./users.js";
+import { issueToken, currentUserId, assertOwner } from "./auth.js";
+const app = express();
+app.use(express.json({ limit: "64kb" }));
+
+function fields(body, limits) {
+  if (
+    !body ||
+    Array.isArray(body) ||
+    typeof body !== "object" ||
+    Object.keys(body).some((k) => !Object.hasOwn(limits, k))
+  )
+    throw new ApiError(400, "BAD_INPUT", "허용된 JSON 필드만 보내세요.");
+  const result = {};
+
+  // 문자열 여부를 먼저 검사하고 일반 입력의 앞뒤 공백만 제거합니다. 비밀번호는 원문을 유지하며, 공백을 포함한 실제 길이로 최대 길이를 검사합니다.
+  for (const [k, max] of Object.entries(limits)) {
+    if (typeof body[k] !== "string")
+      throw new ApiError(400, "BAD_INPUT", `${k} 입력을 확인하세요.`);
+
+    const value = k === "password" ? body[k] : body[k].trim();
+
+    if (!value.trim() || [...value].length > max)
+      throw new ApiError(400, "BAD_INPUT", `${k} 입력을 확인하세요.`);
+
+    result[k] = value;
+  }
+  return result;
+}
+function postId(req) {
+  if (
+    !/^[1-9]\d*$/.test(req.params.id) ||
+    !Number.isSafeInteger(Number(req.params.id))
+  )
+    throw new ApiError(400, "BAD_INPUT", "ID는 양의 정수여야 합니다.");
+  return Number(req.params.id);
+}
+function getPost(id) {
+  const p = store.get(id);
+  if (!p) throw new ApiError(404, "NOT_FOUND", "게시글이 없습니다.");
+  return p;
+}
+app.get("/api/health", (_, res) =>
+  res.json({ status: "ok", stack: "express" }),
+);
+app.post("/api/auth/login", (req, res) => {
+  const input = fields(req.body, { email: 254, password: 128 });
+  const user = verifyCredentials(input.email, input.password);
+  if (!user)
+    throw new ApiError(
+      401,
+      "INVALID_CREDENTIALS",
+      "이메일 또는 비밀번호를 확인하세요.",
+    );
+  const accessToken = issueToken(user);
+  res.json({
+    accessToken,
+    expiresIn: Number(process.env.TOKEN_TTL || 90),
+    user,
+  });
+});
+app.get("/api/me", (req, res) => {
+  const user = findPublic(currentUserId(req));
+  if (!user)
+    throw new ApiError(401, "INVALID_TOKEN", "사용자를 확인할 수 없습니다.");
+  res.json(user);
+});
+app.get("/api/posts", (_, res) => res.json(store.list()));
+app.get("/api/posts/:id", (req, res) => res.json(getPost(postId(req))));
+app.post("/api/posts", (req, res) => {
+  const userId = currentUserId(req);
+  const p = store.create(
+    fields(req.body, { title: 100, content: 5000 }),
+    userId,
+  );
+  res.status(201).location(`/api/posts/${p.id}`).json(p);
+});
+app.put("/api/posts/:id", (req, res) => {
+  const userId = currentUserId(req),
+    id = postId(req),
+    p = getPost(id);
+  assertOwner(userId, p.authorId);
+  res.json(store.update(id, fields(req.body, { title: 100, content: 5000 })));
+});
+app.delete("/api/posts/:id", (req, res) => {
+  const userId = currentUserId(req),
+    id = postId(req),
+    p = getPost(id);
+  assertOwner(userId, p.authorId);
+  store.remove(id);
+  res.status(204).end();
+});
+app.use((_, res) =>
+  res.status(404).json({ code: "NOT_FOUND", message: "API 경로가 없습니다." }),
+);
+// 요청 본문 처리 중 발생한 400/413/415 오류를 400 BAD_INPUT으로 통일했습니다.
+// 기존의 401 인증 헤더와 500 내부 오류 메시지 숨김 처리는 유지합니다.
+app.use((error, req, res, next) => {
+  const status =
+    error instanceof ApiError
+       ? error.status
+       : [400, 413, 415].includes(error.status)
+         ? 400
+         : 500;
+  if (status === 401) res.set("WWW-Authenticate", "Bearer");
+  res
+    .status(status)
+    .json({
+      code:
+        error instanceof ApiError
+          ? error.code
+          : status === 400
+            ? "BAD_INPUT"
+            : "INTERNAL_ERROR",
+      message: status === 500 ? "서버 오류가 발생했습니다." : error.message,
+    });
+});
+app.listen(Number(process.env.PORT || 8000), "127.0.0.1", (error) => {
+  if (error) {
+    console.error("서버 시작 실패:", error.message);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(
+    "지역 맛집 공유 게시판 API http://127.0.0.1:" + (process.env.PORT || 8000),
+  );
+});
